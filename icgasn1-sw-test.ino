@@ -11,7 +11,7 @@
 
 // Defines
 #define PIN_SW_AUTO 4
-#define PIN_SW_DIS A5
+#define PIN_SW_XDIS A5
 #define PIN_VBIAS A4
 #define PIN_VSENS A2
 #define PIN_XSW_OUT A0
@@ -24,7 +24,7 @@
 #define BTN_DEBOUNCE_MS 50
 
 #define SENSE_AVG_SAMPLES 128 // powers of 2 only for efficiency - else division averaging is slow
-#define SENSE_WINDOW_ADC ((uint16_t)(0.4*1024))
+#define SENSE_WINDOW_ADC ((uint16_t)(0.4*1024/5))
 #define DISCHARGE_TIME_MS 100
 
 // Types
@@ -46,15 +46,16 @@ typedef struct
 // Global state
 
 switch_t sw_auto = {LOW, 0};
-switch_t sw_dis = {LOW, 0};
+switch_t sw_xdis = {LOW, 0};
 vmon_t   vmonitor;
+uint16_t manual_count = 0;
 
 // Functions
 
 void setup()
 {
     pinMode(PIN_SW_AUTO, INPUT_PULLUP);
-    pinMode(PIN_SW_DIS, INPUT_PULLUP);
+    pinMode(PIN_SW_XDIS, INPUT_PULLUP);
     pinMode(PIN_VBIAS, INPUT);
     pinMode(PIN_VSENS, INPUT);
     pinMode(PIN_XSW_OUT, OUTPUT);
@@ -69,12 +70,12 @@ void setup()
     }
     Serial.println(F("ICGCASN1 Switch Controller"));
     Serial.println(F("SW_AUTO : " str(PIN_SW_AUTO) " [pullup]"));
-    Serial.println(F("SW_DIS  : " str(PIN_SW_DIS) " [pullup]"));
+    Serial.println(F("sw_xdis  : " str(PIN_SW_XDIS) " [pullup]"));
     Serial.println(F("VBIAS   : " str(PIN_VBIAS)));
     Serial.println(F("VSENS   : " str(PIN_VSENS)));
     Serial.println(F("~SW_OUT : " str(PIN_XSW_OUT)));
     Serial.println(F("LED     : " str(PIN_LED)));
-    Serial.println(F("mod, sense, target, max, min"));
+    Serial.println(F("mod, sense, target, min, max"));
     set_discharge(false);
 }
 
@@ -83,13 +84,14 @@ void loop()
     uint32_t cur_samp_start = millis();
     
     read_switch(&sw_auto, PIN_SW_AUTO);
-    read_switch(&sw_dis, PIN_SW_DIS);
+    read_switch(&sw_xdis, PIN_SW_XDIS);
     
     if(sw_auto.last_state == HIGH)
     {
         read_adc(&vmonitor, PIN_VBIAS, PIN_VSENS);
         if(vmonitor.count == SENSE_AVG_SAMPLES)
         {
+            vmonitor.count = 0;
             uint16_t target = vmonitor.target_sum / SENSE_AVG_SAMPLES;
             uint16_t sense = vmonitor.sense_sum / SENSE_AVG_SAMPLES;
 
@@ -100,7 +102,6 @@ void loop()
             if(sense > target_max || sense < target_min)
             {
                 Serial.print("DIS");
-                memset(&vmonitor, 0, sizeof(vmon_t));
                 set_discharge(true);
                 delay(DISCHARGE_TIME_MS);
                 set_discharge(false);
@@ -119,14 +120,20 @@ void loop()
             Serial.print(",");
             Serial.print(target_max);
             Serial.print("\n");
+            memset(&vmonitor, 0, sizeof(vmon_t));
         }
     }
     else
     {
-        set_discharge(sw_dis.last_state == HIGH);
+        set_discharge(sw_xdis.last_state == LOW);
         memset(&vmonitor, 0, sizeof(vmon_t));
-        Serial.print((sw_dis.last_state == HIGH) ? "DIS" : "RUN");
-        Serial.print(",,,\n");
+        ++manual_count;
+        if(manual_count == SENSE_AVG_SAMPLES)
+        {
+            manual_count = 0;
+            Serial.print((sw_xdis.last_state == LOW) ? "DIS" : "RUN");
+            Serial.print(",,,\n");
+        }
     }
 
     // wait until next scheduled sample time
