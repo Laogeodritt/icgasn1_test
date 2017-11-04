@@ -49,6 +49,7 @@ switch_t sw_auto = {LOW, 0};
 switch_t sw_xdis = {LOW, 0};
 vmon_t   vmonitor;
 uint16_t manual_count = 0;
+uint16_t seconds_tick = 0;
 
 // Functions
 
@@ -75,7 +76,7 @@ void setup()
     Serial.println(F("VSENS   : " str(PIN_VSENS)));
     Serial.println(F("~SW_OUT : " str(PIN_XSW_OUT)));
     Serial.println(F("LED     : " str(PIN_LED)));
-    Serial.println(F("mod, sense, target, min, max"));
+    Serial.println(F("t, mod, sense, target, min, max"));
     set_discharge(false);
 }
 
@@ -98,17 +99,19 @@ void loop()
             uint16_t target_max = target + SENSE_WINDOW_ADC;
             uint16_t target_min = (target > SENSE_WINDOW_ADC) ? target - SENSE_WINDOW_ADC : 0;
 
+            Serial.print(seconds_tick++);
+
             // if out of range, discharge
             if(sense > target_max || sense < target_min)
             {
-                Serial.print("DIS");
+                Serial.print(",DIS");
                 set_discharge(true);
                 delay(DISCHARGE_TIME_MS);
                 set_discharge(false);
             }
             else
             {
-                Serial.print("RUN");
+                Serial.print(",RUN");
             }
 
             Serial.print(",");
@@ -131,7 +134,8 @@ void loop()
         if(manual_count == SENSE_AVG_SAMPLES)
         {
             manual_count = 0;
-            Serial.print((sw_xdis.last_state == LOW) ? "DIS" : "RUN");
+            Serial.print(seconds_tick++);
+            Serial.print((sw_xdis.last_state == LOW) ? ",DIS" : ",RUN");
             Serial.print(",,,\n");
         }
     }
