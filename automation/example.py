@@ -94,6 +94,7 @@ if __name__ == "__main__":
     log.info("1: " + str(data.mean(axis=1)))
     log.info("Columns: " + str(data.columns))
     log.info("Results: " + str(results.data[-10:]))
+    log.info('a ' + str(data[-1:]))
 
     sys.exit(0)
 
