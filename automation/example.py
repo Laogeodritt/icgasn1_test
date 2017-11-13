@@ -2,14 +2,14 @@ import logging
 log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())
 
-import sys
+import sys, os, os.path
 import tempfile
 import random
 from time import sleep
-from pymeasure.log import console_log
+from pymeasure.log import setup_logging
 from pymeasure.display.Qt import QtGui
 from pymeasure.display.windows import ManagedWindow
-from pymeasure.experiment import Procedure, Results
+from pymeasure.experiment import Procedure, Results, Worker
 from pymeasure.experiment import IntegerParameter, FloatParameter, Parameter
 
 class RandomProcedure(Procedure):
@@ -62,6 +62,41 @@ class MainWindow(ManagedWindow):
 
 
 if __name__ == "__main__":
+    setup_logging(console=True, console_level='DEBUG')
+
+    data_filename = 'example.csv'
+    try:
+        os.remove(data_filename)
+    except OSError as e:
+        if os.path.exists(data_filename):
+            raise e # file still exists, couldn't delete - raise error
+        # else fine - file doesn't exist
+
+    procedure = RandomProcedure()
+    procedure.iterations = 20
+    procedure.delay = 0.001
+    procedure.seed = os.urandom(16)
+
+    log.info("Constructing the Results with a data file: %s" % data_filename)
+    results = Results(procedure, data_filename)
+
+    log.info("Constructing the Worker")
+    worker = Worker(results)
+    worker.start()
+    log.info("Started the Worker")
+
+    log.info("Joining with the worker in at most 1 min")
+    worker.join(timeout=60)
+    log.info("Finished the measurement")
+
+    data = results.data
+    log.info("0: " + str(data.mean(axis=0)))
+    log.info("1: " + str(data.mean(axis=1)))
+    log.info("Columns: " + str(data.columns))
+    log.info("Results: " + str(results.data[-10:]))
+
+    sys.exit(0)
+
     app = QtGui.QApplication(sys.argv)
     window = MainWindow()
     window.show()
