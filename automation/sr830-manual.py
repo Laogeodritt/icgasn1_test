@@ -9,9 +9,10 @@ from pymeasure.log import console_log
 from pymeasure.adapters import SerialAdapter
 from pymeasure.display.Qt import QtGui
 from pymeasure.display.windows import ManagedWindow
-from pymeasure.experiment import Procedure, Results
+from pymeasure.experiment import Procedure, Results, Measurable
 from pymeasure.experiment import IntegerParameter, FloatParameter, \
                                  BooleanParameter, Parameter
+from pymeasure.experiment import unique_filename
 
 from pymeasure.instruments.srs import SR830
 
@@ -31,15 +32,16 @@ class AcFreqProcedure(Procedure):
     tolerance = FloatParameter(
         "Tolerance", minimum=0, maximum=1, default=0.01)
     window = IntegerParameter(
-        "TestWindow", units="x100 samples", minimum=1, maximum=20)
+        "TestWindow", units="samples", minimum=10, maximum=2000)
 
-    tau = FloatParameter("Time Constant", units="s")
-    slope = IntegerParameter("Slope", units="dB/8va")
-    tsamp = FloatParameter("Sample time", units="s")
+    auto_tau = FloatParameter("Time Constant", units="s")
+    auto_slope = IntegerParameter("Slope", units="dB/8va")
+    auto_tsamp = FloatParameter("Sample time", units="s")
 
-    meas_r = FloatParameter("R", units="VRMS")
-    meas_phi = FloatParameter("THETA", units="°")
-    deviation = FloatParameter("ΔR", units="%")
+    # TODO: output?
+    meas_r = None
+    meas_phi = None
+    meas_deviation = None
 
     TIME_CONSTANTS_MAP = {
         102000: 0.001,
@@ -74,22 +76,48 @@ class AcFreqProcedure(Procedure):
             raise RuntimeError("Must call {}.configure() first".
                 format(self.__class__))
 
+    def generate_auto_parameters(self):
+        """
+        Parameters like tau, filter slope and sample time can be auto-calculated
+        with recommended values. This method will update all auto_* parameters,
+        based on the currently-set parameters.
+        """
+        p_freq = self.frequency
+
+        # finds the minimum frequency in the map that is >= p_freq
+        tau_key = min(filter(lambda f: f >= p_freq, self.TIME_CONSTANTS_MAP))
+        self.auto_tau = self.TIME_CONSTANTS_MAP[tau_key]
+
+        slope_key = min(filter(lambda f: f >= p_freq, self.TIME_CONSTANTS_MAP))
+        self.auto_slope = self.SLOPES_MAP[slope_key]
+
+        self.auto_tsamp = max(self.auto_tau / 100, self.MIN_SAMPLE_TIME)
+
     def startup(self):
         log.info("Connecting to and configuring SR830...")
-        self.lia = SR830(
-            resource,
-            SR830.OutputInterface.RS232 if is_serial else SR830.OutputInterface.GPIB)
+        output_interface = SR830.OutputInterface.RS232 if self._is_serial \
+            else SR830.OutputInterface.GPIB
+        self.lia = SR830(self._resource, output_interface)
+
+        # Verify identity
         if ",SR830," not in self.lia.id:
-            errmsg = "Device '{}' is not an SR830!".format(str(resource))
+            errmsg = "Device '{!r}' is not an SR830!".format(self._resource)
             log.error(errmsg)
             raise RuntimeError(errmsg)
+
         log.debug("Resetting...")
         self.lia.reset() # see the Standard Settings p4-4 of the manual
         self.lia.sine_voltage = 0.010 # default 1Vrms should be OK but let's do this quickly
-        sleep(0.2) # reset takes time
+        sleep(1) # reset takes time
+
         log.debug("Configuring...")
         log.info("Parameters: f={:.4e} Hz n={:d} phi={:+.2f} deg".format(
             self.frequency, self.harmonic, self.phase))
+        log.info("Auto-parameters: tau={:.1e} s slope={:.0f} dB/octave".format(
+            self.auto_tau, self.auto_slope))
+        log.info("Test parameters: Tsamp={:.1f} s tol={:.2%} window={:d} samples".format(
+            self.auto_tsamp, self.tolerance, self.window))
+
         self.lia.ref_source = 'internal'
         self.lia.frequency = self.frequency
         self.lia.harmonic = self.harmonic
@@ -103,27 +131,13 @@ class AcFreqProcedure(Procedure):
         self.lia.channel1_out = 'display'
         self.lia.channel2_out = 'display'
         self.lia.sensitivity = 20e-3
-        self.lia.time_constant, self.lia.filter_slope = self.get_filter(self.frequency)
+        self.lia.time_constant = self.auto_tau
+        self.lia.filter_slope = self.auto_slope
         self.lia.reserve = "low"
         self.lia.sync_filter = True
 
-        self.sample_time = max(self.lia.time_constant / 100, MIN_SAMPLE_TIME)
-        self.sample_window = self.window * 100
-
-        log.info("Auto-parameters: tau={:.1e} s slope={:.0f} dB/octave".format(
-            self.lia.time_constant, self.lia.slope))
-        log.info("Test parameters: Tsamp={:.1f} s tol={:.2%} window={:d}".format(
-            self.sample_time, self.tolerance, self.window*100))
-
         self.lia.enable_lia_status(input_=True, filter_=True, output=True)
 
-    def get_filter(self, frequency):
-        """
-        Given a frequency, return the recommended (time_constant, slope) tuple.
-        """
-        tau_key = min(filter(lambda f: f >= frequency, self.TIME_CONSTANTS_MAP))
-        slope_key = min(filter(lambda f: f >= frequency, self.SLOPES_MAP))
-        return self.TIME_CONSTANTS_MAP[tau_key], self.SLOPES_MAP[slope_key]
 
     def execute(self):
         time = []
@@ -179,9 +193,11 @@ class AcFreqProcedure(Procedure):
                 log.info("User aborted the procedure")
                 break
 
-    def shutdown(self):
-        self.lia.shutdown()
         log.info("Finished measuring")
+
+    def shutdown(self):
+        log.info("Shutting down %s" % self.__class__.__name__)
+        self.lia.shutdown()
 
 
 class AcSweepProcedure(AcFreqProcedure):
@@ -240,10 +256,10 @@ class AcSweepProcedure(AcFreqProcedure):
     def startup(self):
         log.info("Connecting to and configuring SR830...")
         self.lia = SR830(
-            resource,
+            self._resource,
             SR830.OutputInterface.RS232 if is_serial else SR830.OutputInterface.GPIB)
         if ",SR830," not in self.lia.id:
-            errmsg = "Device '{}' is not an SR830!".format(str(resource))
+            errmsg = "Device '{!r}' is not an SR830!".format(self._resource)
             log.error(errmsg)
             raise RuntimeError(errmsg)
         log.debug("Resetting...")
@@ -363,7 +379,6 @@ class AcSweepProcedure(AcFreqProcedure):
 
 
 class SweepWindow(ManagedWindow):
-    file_series = 0
 
     def __init__(self):
         super().__init__(
@@ -376,8 +391,7 @@ class SweepWindow(ManagedWindow):
         self.setWindowTitle('AC Sweep Measurement')
 
     def queue(self):
-        filename = "sr830_acsweep_{:d}.csv".format(self.file_series)
-        self.file_series += 1
+        filename = unique_filename('.', prefix="data_ac")
 
         procedure = self.make_procedure()
         results = Results(procedure, filename)
@@ -387,24 +401,22 @@ class SweepWindow(ManagedWindow):
 
 
 class MainWindow(ManagedWindow):
-    file_series = 0
-
     def __init__(self):
         super(MainWindow, self).__init__(
             procedure_class=AcFreqProcedure,
             inputs=['frequency', 'harmonic', 'phase', 'tolerance', 'window'],
             displays=['frequency', 'harmonic', 'phase', 'tolerance', 'window',
-            'tau', 'slope', 'tsamp', "meas_r", "meas_phi", "deviation"],
+                'auto_tau', 'auto_slope', 'auto_tsamp'],
             x_axis='Time (s)',
             y_axis='Magnitude (VRMS)'
         )
         self.setWindowTitle('AC Single-Frequency Measurement')
 
     def queue(self):
-        filename = "sr830_acfreq_{:d}.csv".format(self.file_series)
-        self.file_series += 1
+        filename = unique_filename('.', prefix="data_ac")
 
         procedure = self.make_procedure()
+        procedure.generate_auto_parameters()
         results = Results(procedure, filename)
         experiment = self.new_experiment(results)
 
@@ -412,7 +424,7 @@ class MainWindow(ManagedWindow):
 
 
 if __name__ == "__main__":
-    adapter = SerialAdapter('dev/ttyUSB0', baudrate=9600, rtscts=True, timeout=5)
+    adapter = SerialAdapter('/dev/ttyUSB0', baudrate=9600, rtscts=True, timeout=5)
     AcFreqProcedure.configure(adapter, True)
 
     # TODO: window selection
@@ -420,6 +432,6 @@ if __name__ == "__main__":
 
     app = QtGui.QApplication(sys.argv)
     app.setStyle("plastique")
-    window = SweepWindow()
+    window = MainWindow()
     window.show()
     sys.exit(app.exec_())
