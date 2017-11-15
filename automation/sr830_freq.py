@@ -60,9 +60,10 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         'Harmonic', minimum=1, maximum=1000000, default=1)
     phase = FloatParameter(
         'Phase', units='°', minimum=-180.0, maximum=+180.0, default=0)
-    tolerance = FloatParameter("Tolerance", units='%', minimum=0, maximum=100, default=1)
-    window = IntegerParameter(
-        "TestWindow", units="samples", minimum=100, maximum=2000)
+    tolerance = FloatParameter(
+        "Tolerance", units='%', minimum=0, maximum=100, default=1)
+    tau_window = IntegerParameter(
+        "TestWindow", units="tau", minimum=1, maximum=100, default=1)
     reset = True
 
     auto_tau = FloatParameter("Time Constant", units="s")
@@ -110,15 +111,17 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         slope_key = min(filter(lambda f: f >= p_freq, self.SLOPES_MAP))
         self.auto_slope = self.SLOPES_MAP[slope_key]
 
-        self.auto_tsamp = max(self.auto_tau / 10, self.MIN_SAMPLE_TIME)
+        samp_per_tau = 20
+        self.auto_tsamp = max(self.auto_tau / samp_per_tau, self.MIN_SAMPLE_TIME)
+        self.window_samples = int(self.tau_window * samp_per_tau)
 
         self.auto_timeout = 100 * self.auto_tau
 
 
     def startup(self):
         for name in self.meas_window:
-            self.meas_window[name] = deque(maxlen=self.window)
-        self.meas_window['OVF'] = deque(maxlen=self.window)
+            self.meas_window[name] = deque(maxlen=self.window_samples)
+        self.meas_window['OVF'] = deque(maxlen=self.window_samples)
 
         log.info("Connecting to and configuring SR830...")
         output_interface = SR830.OutputInterface.RS232 if self._is_serial \
@@ -147,7 +150,7 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         log.info("Auto-parameters: tau={:.1e} s slope={:.0f} dB/octave".format(
             self.auto_tau, self.auto_slope))
         log.info("Test parameters: Tsamp={:.1f} s tol={:.2f}% window={:d} samples".format(
-            self.auto_tsamp, self.tolerance, self.window))
+            self.auto_tsamp, self.tolerance, self.window_samples))
 
         if self.reset:
             self.lia.ref_source = 'internal'
@@ -275,9 +278,9 @@ class MainWindow(ManagedWindow):
     def __init__(self):
         super(MainWindow, self).__init__(
             procedure_class=AcFreqProcedure,
-            inputs=['frequency', 'harmonic', 'phase', 'tolerance', 'window'],
-            displays=['frequency', 'harmonic', 'phase', 'tolerance', 'window',
-                'auto_tau', 'auto_slope', 'auto_tsamp'],
+            inputs=['frequency', 'harmonic', 'phase', 'tolerance', 'tau_window'],
+            displays=['frequency', 'harmonic', 'phase', 'tolerance',
+                'tau_window', 'auto_tau', 'auto_slope', 'auto_tsamp'],
             x_axis=AcFreqProcedure.COL_T,
             y_axis=AcFreqProcedure.COL_R
         )
