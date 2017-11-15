@@ -91,8 +91,9 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
     DATA_COLUMNS = [COL_T, COL_R, COL_THETA, COL_RS, COL_THETAS, COL_DEV]
 
 
-    def __init__(self, **kwargs):
+    def __init__(self, do_reset=False, **kwargs):
         super().__init__(**kwargs)
+        self.reset = do_reset
         self.meas_window = dict.fromkeys(self.DATA_COLUMNS)
 
 
@@ -137,14 +138,14 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
             raise RuntimeError(errmsg)
 
         if self.reset:
-            log.debug("Resetting...")
+            log.info("Resetting...")
             self.lia.reset() # see the Standard Settings p4-4 of the manual
             self.lia.sine_voltage = 0.010 # default 1Vrms should be OK but let's do this quickly
             time.sleep(1) # reset takes time
         else:
             self.lia.sine_voltage = 0.010
 
-        log.debug("Configuring...")
+        log.info("Configuring...")
         log.info("Parameters: f={:.4e} Hz n={:d} phi={:+.2f} deg".format(
             self.frequency, self.harmonic, self.phase))
         log.info("Auto-parameters: tau={:.1e} s slope={:.0f} dB/octave".format(
@@ -173,6 +174,8 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         self.lia.filter_slope = self.auto_slope
 
         self.lia.enable_lia_status(input_=True, filter_=True, output=True)
+
+        self.reset = False
 
 
     def execute(self):

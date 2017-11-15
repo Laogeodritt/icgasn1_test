@@ -96,8 +96,7 @@ class AcSweepProcedure(Procedure, Sr830ConfigureMixin):
 
 
     def execute_single_freq(self, freq):
-        procedure = AcFreqProcedure()
-        procedure.reset = self.do_reset
+        procedure = AcFreqProcedure(do_reset=self.do_reset)
         procedure.frequency = freq
         procedure.harmonic = self.harmonic
         procedure.phase = self.phase
