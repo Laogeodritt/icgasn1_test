@@ -1,8 +1,17 @@
 import logging
 import sys
-
 from collections import deque
+import time
+
 import numpy as np
+import argparse
+
+# Let's prefer PyQt5, if available
+# PyMeasure/PyQtGraph will use an already-imported module
+try:
+    import PyQt5
+except ImportError:
+    pass
 
 from pymeasure.log import console_log
 from pymeasure.adapters import SerialAdapter
@@ -13,7 +22,8 @@ from pymeasure.experiment import IntegerParameter, FloatParameter, \
                                  BooleanParameter, Parameter
 from pymeasure.experiment import unique_filename
 
-from pymeasure.instruments.srs import SR830
+from pymeasure.instruments.srs import SR830, FakeSR830Adapter, FakeSR830DUT
+from pymeasure.adapters import FakeScpiAdapter
 
 log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())
@@ -50,9 +60,10 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         'Harmonic', minimum=1, maximum=1000000, default=1)
     phase = FloatParameter(
         'Phase', units='°', minimum=-180.0, maximum=+180.0, default=0)
-    tolerance = FloatParameter("Tolerance", minimum=0, maximum=1, default=0.01)
+    tolerance = FloatParameter("Tolerance", units='%', minimum=0, maximum=100, default=1)
     window = IntegerParameter(
         "TestWindow", units="samples", minimum=100, maximum=2000)
+    reset = True
 
     auto_tau = FloatParameter("Time Constant", units="s")
     auto_slope = IntegerParameter("Slope", units="dB/8va")
@@ -81,10 +92,7 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.meas_window = dict.fromkeys(DATA_COLUMNS)
-        for name in self.meas_window:
-            self.meas_window[name] = deque(maxlen=self.window)
-        self.meas_window['OVF'] = deque(maxlen=self.window)
+        self.meas_window = dict.fromkeys(self.DATA_COLUMNS)
 
 
     def generate_auto_parameters(self):
@@ -99,7 +107,7 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         tau_key = min(filter(lambda f: f >= p_freq, self.TIME_CONSTANTS_MAP))
         self.auto_tau = self.TIME_CONSTANTS_MAP[tau_key]
 
-        slope_key = min(filter(lambda f: f >= p_freq, self.TIME_CONSTANTS_MAP))
+        slope_key = min(filter(lambda f: f >= p_freq, self.SLOPES_MAP))
         self.auto_slope = self.SLOPES_MAP[slope_key]
 
         self.auto_tsamp = max(self.auto_tau / 10, self.MIN_SAMPLE_TIME)
@@ -107,10 +115,16 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         self.auto_timeout = 100 * self.auto_tau
 
 
-    def startup(self, reset=True):
+    def startup(self):
+        for name in self.meas_window:
+            self.meas_window[name] = deque(maxlen=self.window)
+        self.meas_window['OVF'] = deque(maxlen=self.window)
+
         log.info("Connecting to and configuring SR830...")
         output_interface = SR830.OutputInterface.RS232 if self._is_serial \
             else SR830.OutputInterface.GPIB
+        if isinstance(self._resource, FakeScpiAdapter):
+            log.info("CURRENTLY IN SIMULATION MODE")
         self.lia = SR830(self._resource, output_interface)
 
         # Verify identity
@@ -119,11 +133,11 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
             log.error(errmsg)
             raise RuntimeError(errmsg)
 
-        if reset:
+        if self.reset:
             log.debug("Resetting...")
             self.lia.reset() # see the Standard Settings p4-4 of the manual
             self.lia.sine_voltage = 0.010 # default 1Vrms should be OK but let's do this quickly
-            sleep(1) # reset takes time
+            time.sleep(1) # reset takes time
         else:
             self.lia.sine_voltage = 0.010
 
@@ -132,10 +146,10 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
             self.frequency, self.harmonic, self.phase))
         log.info("Auto-parameters: tau={:.1e} s slope={:.0f} dB/octave".format(
             self.auto_tau, self.auto_slope))
-        log.info("Test parameters: Tsamp={:.1f} s tol={:.2%} window={:d} samples".format(
+        log.info("Test parameters: Tsamp={:.1f} s tol={:.2f}% window={:d} samples".format(
             self.auto_tsamp, self.tolerance, self.window))
 
-        if reset:
+        if self.reset:
             self.lia.ref_source = 'internal'
             self.lia.input_ground = 'float'
             self.lia.input_line_filter = 'off'
@@ -164,7 +178,7 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         self.event_loop = QtCore.QEventLoop()
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.execute_sample)
-        self.timer.start(self.auto_tsamp)
+        self.timer.start(int(self.auto_tsamp*1000))
         self.event_loop.exec()
         self.timer.stop()
 
@@ -178,14 +192,20 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         cur_theta = self.lia.theta
 
         cur_meas = dict.fromkeys(self.DATA_COLUMNS)
-        last_meas = self.get_last_meas()
+        last_time = self.get_last_time()
 
-        cur_meas[self.COL_T] = last_meas[self.COL_T] + self.auto_tsamp
+        if last_time is not None:
+            cur_meas[self.COL_T] = last_time + self.auto_tsamp
+        else:
+            cur_meas[self.COL_T] = 0
         cur_meas[self.COL_R] = cur_r
         cur_meas[self.COL_THETA] = cur_theta
         cur_meas['OVF'] = self.lia.is_input_overload() or \
                           self.lia.is_filter_overload() or \
-                          self.lia.output_overload()
+                          self.lia.is_output_overload()
+
+        log.debug('t = %.2f, win=%d',
+            cur_meas[self.COL_T], len(self.meas_window[self.COL_T]))
 
         # store measurements so far - meas_window partially desync'd columns
         # want to add R, THETA to more easily calculate means
@@ -195,8 +215,12 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         # calculate and store R mean, deviation
         rr = self.meas_window[self.COL_R]
         cur_meas[self.COL_RS] = sum(rr) / len(rr)
-        cur_meas[self.COL_DEV] = \
-            max(abs(r_avg - max(r_window)), abs(r_avg - min(r_window)))
+
+        abs_dev = max(
+            abs(cur_meas[self.COL_RS] - max(self.meas_window[self.COL_R])),
+            abs(cur_meas[self.COL_RS] - min(self.meas_window[self.COL_R]))
+        )
+        cur_meas[self.COL_DEV] = 100 * abs_dev / cur_meas[self.COL_RS]
 
         # calculate and store theta mean
         tt = self.meas_window[self.COL_THETA]
@@ -211,18 +235,18 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         # if we have a full window and no overload, start looking for endpoint
         if self.is_meas_window_full() and not any(self.meas_window['OVF']):
             # stop point: measurement variation within tolerance
-            if cur_meas[self.COL_DEV]/cur_meas[self.COL_RS] <= self.tolerance:
+            if cur_meas[self.COL_DEV] <= self.tolerance:
                 log.info("Deviation {:.2f}% < {:.2%}. Stopping.".format(
-                    self.deviation, self.tolerance))
+                    cur_meas[self.COL_DEV], self.tolerance))
                 log.info("Final measurement: {:.6f} VRMS {:.6f} DEG".format(
-                    self.meas_r, self.meas_phi))
+                    cur_meas[self.COL_RS], cur_meas[self.COL_THETAS]))
                 self.event_loop.quit()
             # stop point: timeout
             elif cur_meas[self.COL_T] >= self.auto_timeout:
                 log.warning("Timeout {:.2f}s elapsed. Stopping.".format(
                     self.auto_timeout))
                 log.info("Final measurement: {:.6f} VRMS {:.6f} DEG".format(
-                    self.meas_r, self.meas_phi))
+                    cur_meas[self.COL_RS], cur_meas[self.COL_THETAS]))
                 self.event_loop.quit()
 
         if self.should_stop():
@@ -235,11 +259,11 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         return (len(win) == win.maxlen)
 
 
-    def get_last_meas(self):
-        last_meas = dict()
-        for col, vals in self.meas_window.items():
-            last_meas[col] = vals[-1]
-        return last_meas
+    def get_last_time(self):
+        try:
+            return self.meas_window[self.COL_T][-1]
+        except IndexError:
+            return None
 
 
     def shutdown(self):
@@ -271,7 +295,18 @@ class MainWindow(ManagedWindow):
 
 
 if __name__ == "__main__":
-    adapter = SerialAdapter('/dev/ttyUSB0', baudrate=9600, rtscts=True, timeout=5)
+    parser = argparse.ArgumentParser(description='AC Single-Frequency Measurement')
+    parser.add_argument('--simulate', '-s', default=False, action='store_true')
+    args = parser.parse_args()
+
+    if not args.simulate:
+        adapter = SerialAdapter('/dev/ttyUSB0', baudrate=9600, rtscts=True, timeout=5)
+    else:
+        dut = FakeSR830DUT(50e-3, 10000)
+        adapter = FakeSR830Adapter(dut)
+
+    log.setLevel(logging.DEBUG)
+
     AcFreqProcedure.configure(adapter, True)
     app = QtGui.QApplication(sys.argv)
     app.setStyle("plastique")
