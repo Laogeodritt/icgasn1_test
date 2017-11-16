@@ -47,7 +47,7 @@ class AcSweepProcedure(Procedure, Sr830ConfigureMixin):
     tolerance = FloatParameter(
         "Tolerance", units='%', minimum=0, maximum=100, default=1)
     tau_window = IntegerParameter(
-        "TestWindow", units="tau", minimum=1, maximum=100, default=1)
+        "TestWindow", units="tau", minimum=1, maximum=100, default=3)
     filename = 'data_ac.csv'
     
     COL_F = 'Frequency (Hz)'
@@ -106,17 +106,21 @@ class AcSweepProcedure(Procedure, Sr830ConfigureMixin):
 
         data_filename = unique_filename(
             path.splitext(self.filename)[0], prefix='data_freq')
-        log.debug("Constructing the Results with a data file: %s" % data_filename)
+        log.debug("Constructing Results. Data file: %s" % data_filename)
         results = Results(procedure, data_filename)
 
-        log.debug("Constructing the Worker")
+        log.debug("Constructing and starting worker...")
         worker = Worker(results)
         worker.start()
-        log.debug("Started the Worker")
 
-        log.debug("Joining with the worker in at most {:f}s".format(procedure.auto_timeout))
-        worker.join(timeout=procedure.auto_timeout*1000) # todo: allow aborting w/o waiting on single freq here
-        log.debug("Finished the measurement")
+        log.debug("Waiting for task completion...")
+        while worker.is_alive():
+            worker.join(timeout=100)
+
+            if self.should_stop():
+                log.info("User aborted the procedure; stopping subprocedure...")
+                worker.stop()
+                worker.join()
 
         last_data = results.data[-1:]
         r = float(last_data[AcFreqProcedure.COL_RS])
