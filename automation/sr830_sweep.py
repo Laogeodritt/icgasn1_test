@@ -68,12 +68,14 @@ class AcSweepProcedure(Procedure, Sr830ConfigureMixin):
 
 
     def startup(self):
-        log.info("Parameters: {}".format(self.parameter_values))
+        log.info("Parameters: {}".format(self.parameter_values()))
         AcFreqProcedure.configure(self._resource, self._is_serial)
         self.do_reset = True
 
 
     def execute(self):
+        if self.fmin > self.fmax:
+            fmax, fmin = fmin, fmax
         num_points = int(np.log10(self.fmax/self.fmin) * self.points_per_decade)
         freqs = np.geomspace(self.fmax, self.fmin, num_points)
 
@@ -156,6 +158,9 @@ class SweepWindow(ManagedWindow):
         experiment = self.new_experiment(results)
 
         self.manager.queue(experiment)
+
+    def setup_plot(self, plot):
+        plot.setLogMode(x=True)
 
 
 if __name__ == "__main__":
