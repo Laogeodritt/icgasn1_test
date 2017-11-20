@@ -79,7 +79,7 @@ class AcSweepProcedure(Procedure, Sr830ConfigureMixin):
         num_points = int(np.log10(self.fmax/self.fmin) * self.points_per_decade)
         freqs = np.geomspace(self.fmax, self.fmin, num_points)
 
-        for freq in freqs:
+        for i, freq in enumerate(freqs):
             log.info("Measuring @ frequency: {:.3f}".format(freq))
             r, phi, dev = self.execute_single_freq(freq)
             self.do_reset = False # no need to full reset on subsequent points
@@ -91,6 +91,7 @@ class AcSweepProcedure(Procedure, Sr830ConfigureMixin):
                 self.COL_THETA: phi,
                 self.COL_DEV: dev
             })
+            self.emit('progress', 100*(i+1)/len(freqs))
 
             if self.should_stop():
                 log.info("User aborted the procedure")
