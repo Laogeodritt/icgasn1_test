@@ -81,6 +81,7 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
     }
     SLOPES_MAP = {102000: 24}
     MIN_SAMPLE_TIME = 0.2
+    MIN_WINDOW_SAMPLES = 5
     
     COL_T = 'Time (s)'
     COL_R = 'Magnitude (VRMS)'
@@ -114,8 +115,14 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         self.auto_slope = self.SLOPES_MAP[slope_key]
 
         samp_per_tau = 20
-        self.auto_tsamp = max(self.auto_tau / samp_per_tau, self.MIN_SAMPLE_TIME)
+        self.auto_tsamp = self.auto_tau / samp_per_tau
         self.window_samples = int(self.tau_window * samp_per_tau)
+
+        if self.auto_tsamp < self.MIN_SAMPLE_TIME:
+            self.auto_tsamp = self.MIN_SAMPLE_TIME
+            self.window_samples = max(
+                int(round(self.tau_window * self.auto_tau / self.auto_tsamp)),
+                self.MIN_WINDOW_SAMPLES)
 
         self.auto_timeout = 100 * self.auto_tau
 
