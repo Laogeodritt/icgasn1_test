@@ -165,12 +165,15 @@ class SweepWindow(ManagedWindow):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='AC Single-Frequency Measurement')
-    parser.add_argument('--simulate', '-s', default=False, action='store_true')
+    parser = argparse.ArgumentParser(description='SR830 AC Sweep Measurement')
+    parser.add_argument('--simulate', '-s', default=False, action='store_true', help='Simulate the SR830 equipment for testing.')
+    # TODO: VISA/GPIB support?
+    parser.add_argument('device', default='/dev/ttyUSB0', nargs='?', help='Serial device address. Default: /dev/ttyUSB0')
     args = parser.parse_args()
 
     if not args.simulate:
-        adapter = SerialAdapter('/dev/ttyUSB0', baudrate=9600, rtscts=True, timeout=5)
+        adapter = SerialAdapter(args.device, baudrate=9600, \
+            rtscts=True, dsrdtr=True, timeout=1)
     else:
         dut = FakeSR830DUT(50e-3, 10000)
         adapter = FakeSR830Adapter(dut)

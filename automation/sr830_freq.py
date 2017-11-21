@@ -80,7 +80,7 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         1: 10.0
     }
     SLOPES_MAP = {102000: 24}
-    MIN_SAMPLE_TIME = 0.01
+    MIN_SAMPLE_TIME = 0.2
     
     COL_T = 'Time (s)'
     COL_R = 'Magnitude (VRMS)'
@@ -94,6 +94,7 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
     def __init__(self, do_reset=False, **kwargs):
         super().__init__(**kwargs)
         self.reset = do_reset
+        self.exception = None
         self.meas_window = dict.fromkeys(self.DATA_COLUMNS)
 
 
@@ -132,8 +133,10 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         self.lia = SR830(self._resource, output_interface)
 
         # Verify identity
-        if ",SR830," not in self.lia.id:
-            errmsg = "Device '{!r}' is not an SR830!".format(self._resource)
+        idn = self.lia.id
+        if ",SR830," not in idn:
+            errmsg = "Device '{!r}' is not an SR830! IDN: {}".format(
+                        self._resource, idn if idn else None)
             log.error(errmsg)
             raise RuntimeError(errmsg)
 
@@ -188,76 +191,87 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         self.event_loop.exec()
         self.timer.stop()
 
-        log.info("Finished measuring")
+        if self.exception is None:
+            log.info("Finished measuring")
+        else:
+            log.error("Error while executing measurement")
+            self.status = Procedure.FAILED
+            self.emit('status', Procedure.FAILED)
 
 
     def execute_sample(self):
-        # measure immediately and with minimum time between the two values
-        # exact simultaneity is not necessary
-        cur_r = self.lia.magnitude
-        cur_theta = self.lia.theta
+        try:
+            # measure immediately and with minimum time between the two values
+            # exact simultaneity is not necessary
+            cur_r = self.lia.magnitude
+            cur_theta = self.lia.theta
 
-        cur_meas = dict.fromkeys(self.DATA_COLUMNS)
-        last_time = self.get_last_time()
+            cur_meas = dict.fromkeys(self.DATA_COLUMNS)
+            last_time = self.get_last_time()
 
-        if last_time is not None:
-            cur_meas[self.COL_T] = last_time + self.auto_tsamp
-        else:
-            cur_meas[self.COL_T] = 0
-        cur_meas[self.COL_R] = cur_r
-        cur_meas[self.COL_THETA] = cur_theta
-        cur_meas['OVF'] = self.lia.is_input_overload() or \
-                          self.lia.is_filter_overload() or \
-                          self.lia.is_output_overload()
+            if last_time is not None:
+                cur_meas[self.COL_T] = last_time + self.auto_tsamp
+            else:
+                cur_meas[self.COL_T] = 0
+            cur_meas[self.COL_R] = cur_r
+            cur_meas[self.COL_THETA] = cur_theta
+            cur_meas['OVF'] = self.lia.is_input_overload() or \
+                              self.lia.is_filter_overload() or \
+                              self.lia.is_output_overload()
 
-        log.debug('t = %.2f, win=%d',
-            cur_meas[self.COL_T], len(self.meas_window[self.COL_T]))
+            log.debug('t = %.2f, win=%d',
+                cur_meas[self.COL_T], len(self.meas_window[self.COL_T]))
 
-        # store measurements so far - meas_window partially desync'd columns
-        # want to add R, THETA to more easily calculate means
-        for name in (self.COL_T, self.COL_R, self.COL_THETA, 'OVF'):
-            self.meas_window[name].append(cur_meas[name])
+            # store measurements so far - meas_window partially desync'd columns
+            # want to add R, THETA to more easily calculate means
+            for name in (self.COL_T, self.COL_R, self.COL_THETA, 'OVF'):
+                self.meas_window[name].append(cur_meas[name])
 
-        # calculate and store R mean, deviation
-        rr = self.meas_window[self.COL_R]
-        cur_meas[self.COL_RS] = sum(rr) / len(rr)
+            # calculate and store R mean, deviation
+            rr = self.meas_window[self.COL_R]
+            cur_meas[self.COL_RS] = sum(rr) / len(rr)
 
-        abs_dev = max(
-            abs(cur_meas[self.COL_RS] - max(self.meas_window[self.COL_R])),
-            abs(cur_meas[self.COL_RS] - min(self.meas_window[self.COL_R]))
-        )
-        cur_meas[self.COL_DEV] = 100 * abs_dev / cur_meas[self.COL_RS]
+            abs_dev = max(
+                abs(cur_meas[self.COL_RS] - max(self.meas_window[self.COL_R])),
+                abs(cur_meas[self.COL_RS] - min(self.meas_window[self.COL_R]))
+            )
+            cur_meas[self.COL_DEV] = 100 * abs_dev / cur_meas[self.COL_RS]
 
-        # calculate and store theta mean
-        tt = self.meas_window[self.COL_THETA]
-        cur_meas[self.COL_THETAS] = sum(tt) / len(tt)
+            # calculate and store theta mean
+            tt = self.meas_window[self.COL_THETA]
+            cur_meas[self.COL_THETAS] = sum(tt) / len(tt)
 
-        # store measurements so far - meas_window columns all in sync
-        for name in (self.COL_RS, self.COL_DEV, self.COL_THETAS):
-            self.meas_window[name].append(cur_meas[name])
+            # store measurements so far - meas_window columns all in sync
+            for name in (self.COL_RS, self.COL_DEV, self.COL_THETAS):
+                self.meas_window[name].append(cur_meas[name])
 
-        self.emit('results', cur_meas)
+            self.emit('results', cur_meas)
 
-        # if we have a full window and no overload, start looking for endpoint
-        if self.is_meas_window_full() and not any(self.meas_window['OVF']):
-            # stop point: measurement variation within tolerance
-            if cur_meas[self.COL_DEV] <= self.tolerance:
-                log.info("Deviation {:.2f}% < {:.2%}. Stopping.".format(
-                    cur_meas[self.COL_DEV], self.tolerance))
-                log.info("Final measurement: {:.6f} VRMS {:.6f} DEG".format(
-                    cur_meas[self.COL_RS], cur_meas[self.COL_THETAS]))
+            # if we have a full window and no overload, start looking for endpoint
+            if self.is_meas_window_full() and not any(self.meas_window['OVF']):
+                # stop point: measurement variation within tolerance
+                if cur_meas[self.COL_DEV] <= self.tolerance:
+                    log.info("Deviation {:.2f}% < {:.2%}. Stopping.".format(
+                        cur_meas[self.COL_DEV], self.tolerance))
+                    log.info("Final measurement: {:.6f} VRMS {:.6f} DEG".format(
+                        cur_meas[self.COL_RS], cur_meas[self.COL_THETAS]))
+                    self.event_loop.quit()
+                # stop point: timeout
+                elif cur_meas[self.COL_T] >= self.auto_timeout:
+                    log.warning("Timeout {:.2f}s elapsed. Stopping.".format(
+                        self.auto_timeout))
+                    log.info("Final measurement: {:.6f} VRMS {:.6f} DEG".format(
+                        cur_meas[self.COL_RS], cur_meas[self.COL_THETAS]))
+                    self.event_loop.quit()
+
+            if self.should_stop():
+                log.info("User aborted the procedure")
                 self.event_loop.quit()
-            # stop point: timeout
-            elif cur_meas[self.COL_T] >= self.auto_timeout:
-                log.warning("Timeout {:.2f}s elapsed. Stopping.".format(
-                    self.auto_timeout))
-                log.info("Final measurement: {:.6f} VRMS {:.6f} DEG".format(
-                    cur_meas[self.COL_RS], cur_meas[self.COL_THETAS]))
-                self.event_loop.quit()
 
-        if self.should_stop():
-            log.info("User aborted the procedure")
-            self.event_loop.quit()
+            except Exception as e: # because Qt doesn't like exceptions in its event loop
+                log.exception("Error while processing sample")
+                self.exception = e
+                self.event_loop.quit()
 
 
     def is_meas_window_full(self):
@@ -301,12 +315,15 @@ class MainWindow(ManagedWindow):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='AC Single-Frequency Measurement')
-    parser.add_argument('--simulate', '-s', default=False, action='store_true')
+    parser = argparse.ArgumentParser(description='SR830 AC Single-Frequency Measurement')
+    parser.add_argument('--simulate', '-s', default=False, action='store_true', help='Simulate the SR830 equipment for testing.')
+    # TODO: VISA/GPIB support?
+    parser.add_argument('device', default='/dev/ttyUSB0', nargs='?', help='Serial device address. Default: /dev/ttyUSB0')
     args = parser.parse_args()
 
     if not args.simulate:
-        adapter = SerialAdapter('/dev/ttyUSB0', baudrate=9600, rtscts=True, timeout=5)
+        adapter = SerialAdapter(args.device, baudrate=9600, \
+            rtscts=True, dsrdtr=True, timeout=1)
     else:
         dut = FakeSR830DUT(50e-3, 10000)
         adapter = FakeSR830Adapter(dut)
