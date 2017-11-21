@@ -201,10 +201,8 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
 
     def execute_sample(self):
         try:
-            # measure immediately and with minimum time between the two values
-            # exact simultaneity is not necessary
-            cur_r = self.lia.magnitude
-            cur_theta = self.lia.theta
+            # measure immediately on call to maximise sample time consistency
+            cur_res = self.lia.measure_multiple(('R', 'THETA'))
 
             cur_meas = dict.fromkeys(self.DATA_COLUMNS)
             last_time = self.get_last_time()
@@ -213,11 +211,9 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
                 cur_meas[self.COL_T] = last_time + self.auto_tsamp
             else:
                 cur_meas[self.COL_T] = 0
-            cur_meas[self.COL_R] = cur_r
-            cur_meas[self.COL_THETA] = cur_theta
-            cur_meas['OVF'] = self.lia.is_input_overload() or \
-                              self.lia.is_filter_overload() or \
-                              self.lia.is_output_overload()
+            cur_meas[self.COL_R] = cur_res['R']
+            cur_meas[self.COL_THETA] = cur_res['THETA']
+            cur_meas['OVF'] = (int(self.lia.lia_status_byte) & 0x7) > 0
 
             log.debug('t = %.2f, win=%d',
                 cur_meas[self.COL_T], len(self.meas_window[self.COL_T]))
@@ -235,7 +231,7 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
                 abs(cur_meas[self.COL_RS] - max(self.meas_window[self.COL_R])),
                 abs(cur_meas[self.COL_RS] - min(self.meas_window[self.COL_R]))
             )
-            cur_meas[self.COL_DEV] = 100 * abs_dev / cur_meas[self.COL_RS]
+            cur_meas[self.COL_DEV] = 100 * abs_dev / abs(cur_meas[self.COL_RS])
 
             # calculate and store theta mean
             tt = self.meas_window[self.COL_THETA]
@@ -251,7 +247,7 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
             if self.is_meas_window_full() and not any(self.meas_window['OVF']):
                 # stop point: measurement variation within tolerance
                 if cur_meas[self.COL_DEV] <= self.tolerance:
-                    log.info("Deviation {:.2f}% < {:.2%}. Stopping.".format(
+                    log.info("Deviation {:.2f}% < {:.2f}%. Stopping.".format(
                         cur_meas[self.COL_DEV], self.tolerance))
                     log.info("Final measurement: {:.6f} VRMS {:.6f} DEG".format(
                         cur_meas[self.COL_RS], cur_meas[self.COL_THETAS]))
@@ -268,10 +264,10 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
                 log.info("User aborted the procedure")
                 self.event_loop.quit()
 
-            except Exception as e: # because Qt doesn't like exceptions in its event loop
-                log.exception("Error while processing sample")
-                self.exception = e
-                self.event_loop.quit()
+        except Exception as e: # because Qt doesn't like exceptions in its event loop
+            log.exception("Error while processing sample")
+            self.exception = e
+            self.event_loop.quit()
 
 
     def is_meas_window_full(self):
