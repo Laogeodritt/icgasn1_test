@@ -151,7 +151,7 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
             log.info("Resetting...")
             self.lia.reset() # see the Standard Settings p4-4 of the manual
             self.lia.sine_voltage = 0.010 # default 1Vrms should be OK but let's do this quickly
-            time.sleep(1) # reset takes time
+            time.sleep(2) # reset takes time
         else:
             self.lia.sine_voltage = 0.010
 
@@ -186,6 +186,8 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         self.lia.enable_lia_status(input_=True, filter_=True, output=True)
 
         self.reset = False
+
+        time.sleep(1) # some time for the instrument to catch up
 
 
     def execute(self):

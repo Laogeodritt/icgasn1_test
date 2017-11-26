@@ -22,7 +22,7 @@ from pymeasure.experiment import IntegerParameter, FloatParameter
 from pymeasure.experiment import unique_filename
 
 from pymeasure.instruments.srs import SR830
-from sr830_freq import Sr830ConfigureMixin, AcFreqProcedure
+from sr830_freq import Sr830ConfigureMixin, AcFreqProcedure, log as freq_log
 
 from pymeasure.instruments.srs import SR830, FakeSR830Adapter, FakeSR830DUT
 from pymeasure.adapters import FakeScpiAdapter
@@ -125,6 +125,9 @@ class AcSweepProcedure(Procedure, Sr830ConfigureMixin):
                 worker.stop()
                 worker.join()
 
+        if procedure.status == Procedure.FAILED:
+            raise RuntimeError("SR830 single-frequency sub-procedure failed")
+
         last_data = results.data[-1:]
         r = float(last_data[AcFreqProcedure.COL_RS])
         theta = float(last_data[AcFreqProcedure.COL_THETAS])
@@ -178,8 +181,10 @@ if __name__ == "__main__":
         dut = FakeSR830DUT(50e-3, 10000)
         adapter = FakeSR830Adapter(dut)
 
-    log.setLevel(logging.DEBUG)
-    console_log(log, level=logging.DEBUG)
+    #log.setLevel(logging.DEBUG)
+    #freq_log.setLevel(logging.DEBUG)
+
+    #console_log(log, level=logging.DEBUG)
 
     AcSweepProcedure.configure(adapter, True)
     app = QtGui.QApplication(sys.argv)
