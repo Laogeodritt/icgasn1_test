@@ -1,0 +1,22 @@
+{
+	"folders":
+	[
+		{
+			"path": "automation"
+		},
+		{
+			"folder_exclude_patterns":
+			[
+				"*.egg-info",
+				".eggs"
+			],
+			"path": "/home/marcalexc/data/elec/lab-tools/pymeasure"
+		},
+		{
+			"path": "/home/marcalexc/.virtualenvs/elec-lab/lib/python3.5/site-packages/pyqtgraph-0.10.0-py3.5.egg/pyqtgraph"
+		},
+		{
+			"path": "/usr/lib/python3/dist-packages"
+		}
+	]
+}
