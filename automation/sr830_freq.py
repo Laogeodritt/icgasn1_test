@@ -77,7 +77,8 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
         1000: 0.1,
         100: 1.0,
         10: 3.0,
-        1: 10.0
+        1: 10.0,
+        0.34: 30.0
     }
     SLOPES_MAP = {102000: 24}
     MIN_SAMPLE_TIME = 0.2
@@ -160,8 +161,11 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
             self.frequency, self.harmonic, self.phase))
         log.info("Auto-parameters: tau={:.1e} s slope={:.0f} dB/octave".format(
             self.auto_tau, self.auto_slope))
-        log.info("Test parameters: Tsamp={:.1f} s tol={:.2f}% window={:d} samples".format(
-            self.auto_tsamp, self.tolerance, self.window_samples))
+        log.info(("Test parameters: " +
+                  "Tsamp={:.1f} s tol={:.2f}% window={:d} samples timeout={:.1f}s")
+                .format(
+                    self.auto_tsamp, self.tolerance, self.window_samples,
+                    self.auto_timeout))
 
         if self.reset:
             self.lia.ref_source = 'internal'
@@ -172,7 +176,7 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
             self.lia.channel1_out = 'display'
             self.lia.channel2_out = 'display'
             self.lia.sensitivity = 20e-3
-            self.lia.reserve = "low"
+            self.lia.reserve = "high"
             self.lia.sync_filter = True
 
         self.lia.frequency = self.frequency
@@ -253,7 +257,8 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
             self.emit('results', cur_meas)
 
             # if we have a full window and no overload, start looking for endpoint
-            if self.is_meas_window_full() and not any(self.meas_window['OVF']):
+            if self.is_meas_window_full() and last_time >= 10*self.auto_tau \
+                    and not any(self.meas_window['OVF']):
                 # stop point: measurement variation within tolerance
                 if cur_meas[self.COL_DEV] <= self.tolerance:
                     log.info("Deviation {:.2f}% < {:.2f}%. Stopping.".format(
@@ -261,6 +266,7 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
                     log.info("Final measurement: {:.6f} VRMS {:.6f} DEG".format(
                         cur_meas[self.COL_RS], cur_meas[self.COL_THETAS]))
                     self.event_loop.quit()
+                    return
                 # stop point: timeout
                 elif cur_meas[self.COL_T] >= self.auto_timeout:
                     log.warning("Timeout {:.2f}s elapsed. Stopping.".format(
@@ -268,9 +274,10 @@ class AcFreqProcedure(Procedure, Sr830ConfigureMixin):
                     log.info("Final measurement: {:.6f} VRMS {:.6f} DEG".format(
                         cur_meas[self.COL_RS], cur_meas[self.COL_THETAS]))
                     self.event_loop.quit()
+                    return
 
             if self.should_stop():
-                log.info("User aborted the procedure")
+                log.info("User aborted the procedure [execute_sample]")
                 self.event_loop.quit()
 
         except Exception as e: # because Qt doesn't like exceptions in its event loop

@@ -94,7 +94,7 @@ class AcSweepProcedure(Procedure, Sr830ConfigureMixin):
             self.emit('progress', 100*(i+1)/len(freqs))
 
             if self.should_stop():
-                log.info("User aborted the procedure")
+                log.info("User aborted the procedure [sweep outer loop]")
                 break
 
 
@@ -118,7 +118,7 @@ class AcSweepProcedure(Procedure, Sr830ConfigureMixin):
 
         log.debug("Waiting for task completion...")
         while worker.is_alive():
-            worker.join(timeout=100)
+            time.sleep(0.5) # don't worker.join() here - join stops thread on return
 
             if self.should_stop():
                 log.info("User aborted the procedure; stopping subprocedure...")
@@ -181,8 +181,8 @@ if __name__ == "__main__":
         dut = FakeSR830DUT(50e-3, 10000)
         adapter = FakeSR830Adapter(dut)
 
-    #log.setLevel(logging.DEBUG)
-    #freq_log.setLevel(logging.DEBUG)
+    log.setLevel(logging.DEBUG)
+    freq_log.setLevel(logging.DEBUG)
 
     #console_log(log, level=logging.DEBUG)
 
